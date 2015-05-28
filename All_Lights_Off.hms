@@ -1,0 +1,14 @@
+var i = dom.GetObject("Licht");
+
+string itemID;
+
+foreach(itemID, i.EnumUsedIDs())
+{
+    var item = dom.GetObject(itemID);
+    if (item.IsTypeOf(OT_CHANNEL))
+    {
+        var device = dom.GetObject(item.Device());
+        if ((device.HssType().Find("HM-LC-Sw") >= 0) && (item.State())) { item.State(0); }
+        if ((device.HssType().Find("HM-LC-Dim") >= 0) && (item.State())) { item.State(0.00); }
+    }
+}
