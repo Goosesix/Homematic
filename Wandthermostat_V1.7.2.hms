@@ -1,0 +1,293 @@
+string raum = "Kueche" ; 
+
+! Version 1.7.2
+! Script von Erik Groennerud - 8.2009- MM.2010
+! Ergaenzung von Zauberlehrling
+! Optimiert und ergaenzt von Petrus (Peter)
+
+! Temperaturen 8-30 Grad, 0 = OFF, 100=ON
+real grad_0 = 19;
+real grad_1 = 20.5;
+real grad_2 = 21.0;
+real grad_3 = 21.5;
+real grad_4 = 22.5;
+real grad_5 = 23;
+real grad_6 = 25;
+real grad_7 = 27;
+real grad_8 = 0;
+real grad_9 = 100;
+
+real grad_fenster = 6;         ! Temperatur bei offenem Fenster -1 = off
+real grad_urlaub  = 16;        ! Temperatur im Urlaub -1 = off
+real grad_gaeste  = 23.5;      ! Temperatur fuer Gaeste -1 = off
+real grad_aa      = 19;        ! Temperatur ausser haus, wird als Absenkung benutzt, -1 = OFF (Anwesenheit)
+
+string deltaStdMin = "02:00";  ! deltaStdMin mit "hh:mm" setzten (Std / Min immer zweistellig) Differenzzeit, die manuelle Temperatur erhalten bleibt bis überschrieben wird.
+
+integer woche = 0;             ! 0=7 Tage Woche, 1=Montag=Wochentags & Samstag=Wochenende, 2= Montag=Woche, 3=Montag=Wochentags & Samstag=Samstag & Sonntag=Sonntag
+
+integer leiste = 1;						 ! Welche Zeitleiste aktiv ist
+
+if (leiste == 1){
+! Zeitleiste 1
+! Uhrzeit                0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 2 2 2 2|
+!                        0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3|
+string zeitleiste_mon = "000000000000012210000000000000000011222233321110";
+string zeitleiste_die = "000000000000012210000000000000000011111133321110";
+string zeitleiste_mit = "000000000000012210000000000000000011111133321110";
+string zeitleiste_don = "000000000000012211111111111111111111111133321110";
+string zeitleiste_fre = "000000000000012110000000000000000011111133321110";
+string zeitleiste_sam = "000000000000001222222221111111111112223333221110";
+string zeitleiste_son = "000000000000001211111111111111111111223333221110";
+};
+if (leiste == 2){
+! Zeitleiste 2
+! Uhrzeit                0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 2 2 2 2|
+!                        0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3|
+string zeitleiste_mon = "000000000000012210000000000000000011222233321110";
+string zeitleiste_die = "000000000000012210000000000000000011111133321110";
+string zeitleiste_mit = "000000000000012210000000000000000011111133321110";
+string zeitleiste_don = "000000000000012211111111111111111111111133321110";
+string zeitleiste_fre = "000000000000012110000000000000000011111133321110";
+string zeitleiste_sam = "000000000000001222222221111111111112223333221110";
+string zeitleiste_son = "000000000000001211111111111111111111223333221110";
+};
+
+boolean debug = 0;             ! Debug Infos ins Syslog
+
+!******************************************************
+! Ab hier Script CODE - Do not change behind this line
+!******************************************************
+
+! Umwandeln deltaStdMin in Sekunden
+integer stunde = deltaStdMin.Substr(0, 2).ToInteger();
+integer minute = deltaStdMin.Substr(3, 2).ToInteger();
+integer setdelta = (stunde * 3600) + (minute * 60);
+
+object regler;                ! Datenobjekt des Reglers für die Solltemperatur (Kanal 2)
+
+real soll_neu;                ! Die neue Solltemperatur fuer den Raumthermostaten (Regler).
+real soll_alt;                ! Die alte Solltemperatur der Zeitleiste, die zuletzt aktuell war.
+real soll_ist = -1;           ! Die aktuelle Solltemperatur im Raumthermostat (Regler).
+
+time sv_timestamp;            ! Zeitstempel der Systemvariablen, die zuletzt geändert worden ist (Wert in Sekunden).
+time rt_timestamp;            ! Zeitstempel, wann die Solltemperatur im RT zuletzt gesetzt wurde.
+boolean prioritaet = false;   ! Ist prioritaet = true, dann wird die neue Solltemperatur auf jeden Fall in den Regler geschrieben.
+ 
+!Wenn keine Heizperiode, dann Heizkörper auf
+if (dom.GetObject('Heizperiode').State()) {
+    soll_neu = 100;
+    prioritaet = true;
+
+    var myAssembly = dom.GetObject(raum);
+    string itemID;
+
+    ! Solltemperatur im Raumthermostat ermitteln.
+    foreach(itemID, myAssembly.EnumUsedIDs()) {
+        var item = dom.GetObject(itemID);
+        if (item.IsTypeOf(OT_CHANNEL)) {
+            var device = dom.GetObject(item.Device());
+
+            ! Wenn Raumthermostat gefunden wurde...
+            if (device.HssType() == "HM-CC-TC") {
+                if (soll_ist < 0) { ! ...und Temperaturwert noch nicht abgefragt worden ist...
+
+                    ! ...dann aktuelle Solltemperatur auslesen.
+                    regler = dom.GetObject("BidCos-RF." # device.Address() # ":2.SETPOINT");
+                    soll_ist = regler.Value();
+                }
+            }
+        }
+    }
+} else {
+	
+    ! Alle Geräte im "raum" abfragen und auswerten.
+    var myAssembly = dom.GetObject(raum);
+    string itemID;
+    integer offen = 0;
+		
+    foreach(itemID, myAssembly.EnumUsedIDs()) {
+        var item = dom.GetObject(itemID);
+        if (item.IsTypeOf(OT_CHANNEL)) {
+            var device = dom.GetObject(item.Device());
+
+            ! Wenn Raumthermostat gefunden wurde...
+            if (device.HssType() == "HM-CC-TC") {
+                if (soll_ist < 0) { ! ...und Temperaturwert noch nicht abgefragt worden ist...
+
+                    ! ...dann aktuelle Solltemperatur auslesen.
+                    regler = dom.GetObject("BidCos-RF." # device.Address() # ":2.SETPOINT");
+                    soll_ist = regler.Value();
+                }
+
+            } else {
+				
+                ! Prüfen, ob Verschluss offen
+                ! Testen, ob Fenster Dachluken, usw. offen sind. Diese müssen dem jeweiligen Raum und dem Gewerk "Verschluss" zugeordnet sein
+                ! Alle Gewerke dem Raum zugeordneten Geräte untersuchen
+                ! Andere als die aufgeführten Sensoren oder Aktoren, die als Verschluss dienen, einfach in nachfolgender IF-Anweisung ändern oder ergänzen.
+
+                     ! Türfensterkontakte                 Jalousienaktor / Dachluken Funk         Jalousienaktor / Dachluken Wired          Schließerkontakt-Sensor Hutschienenmontage Fenster-Drehgriffsensoren
+                if ((device.HssType() == "HM-Sec-SC") || (device.HssType() == "HM-LC-Bl1-FM") || (device.HssType() == "HMW-LC-Bl1-DR")  || (device.HssType() == "HMW-Sen-SC-12-DR") || (device.HssType() == "HM-Sec-RHS")) {
+                    var myChannel = dom.GetObject(item);
+                    string id;
+                    foreach(id, myChannel.ChnFunction()) {
+                        var func = dom.GetObject(id);
+                        if (func.Name() == "Verschluss") {
+                            if (item.State() > 0) { offen = offen + 1.00; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+        
+    ! Wenn ein Verschluss im Raum offen ist, dann Fenstertemperatur einstellen   
+    if (offen > 0) { ! Fenster offen, Ventile einstellen
+        if (soll_ist <= grad_fenster) { ! Wenn soll_ist niedriger als grad_fenster (z.B. Ventile zu -> soll_ist = 0), dann nichts machen
+            soll_neu = soll_ist;
+        } else {
+            soll_neu = grad_fenster;
+            prioritaet = true;
+        }
+    } else {
+
+        ! Timestamp "Partytemperatur" festhalten
+        sv_timestamp = dom.GetObject('Partytemperatur').Timestamp();
+
+        ! Partytemperatur testen und einstellen, -1 = deaktiviert
+        integer partytemperatur = dom.GetObject('Partytemperatur').State();
+        if (partytemperatur > -1) { !Wenn Partytemperatur, dann einstellen
+            soll_neu = partytemperatur;
+        } else {
+		   
+            ! Prüfen ob Timestamp "Urlaub" jünger ist als "Partytemperatur" => Wenn ja, merken
+                time settime = dom.GetObject('Urlaub').Timestamp();
+                if (settime > sv_timestamp) {sv_timestamp = settime;}
+		
+            ! Urlaub testen und einstellen, -1 = deaktiviert
+            if ((dom.GetObject('Urlaub').State()) && (grad_urlaub > -1)) { !Wenn im Urlaub und grad_urlaub nicht -1 (deaktiviert)
+            	  soll_neu = grad_urlaub;
+            } else {
+
+                ! Prüfen ob Timestamp "Gaeste" jünger ist als "Urlaub" => Wenn ja, merken
+                settime = dom.GetObject('Gaeste').Timestamp();
+                if (settime > sv_timestamp) {sv_timestamp = settime;}
+
+                ! Gaeste testen und einstellen, -1 = deaktiviert
+                if ((dom.GetObject('Gaeste').State()) && (grad_gaeste > -1)){ !Wenn Gaeste im Haus und grad_gaeste nicht -1 (deaktiviert)
+                	  soll_neu = grad_gaeste;
+                } else {
+				
+                    ! Prüfen ob Timestamp "Anwesenheit" jünger ist als "Gaeste" => Wenn ja, merken
+                    settime = dom.GetObject('Anwesenheit').Timestamp();
+                    if (settime > sv_timestamp) {sv_timestamp = settime;}
+
+                    ! Differenzen von außer Haus Testen und beachten
+                    if ((!dom.GetObject('Anwesenheit').State()) && (grad_aa > -1)) {
+                        soll_neu = grad_aa;
+                    } else {
+
+	                string zeitleiste_heute;        ! Die Temperaturleiste fuer den aktuellen Tag.
+	                string zeitleiste_gestern;      ! Die Temperaturleiste von gestern.
+                        string heizwert;                ! Enthaelt den Wert, der in der Zeitleiste zum jetzigen Zeitpunkt gilt.
+
+                        ! Hier nun die Auswertung der Zeitleisten
+                        !Auswerten, welche Zeitleiste heute ist
+                        integer tag = system.Date("%u");
+                        if ((tag == 1) && (woche == 0)) {zeitleiste_heute = zeitleiste_mon;} else {
+                        if ((tag == 2) && (woche == 0)) {zeitleiste_heute = zeitleiste_die;} else {
+                        if ((tag == 3) && (woche == 0)) {zeitleiste_heute = zeitleiste_mit;} else {
+                        if ((tag == 4) && (woche == 0)) {zeitleiste_heute = zeitleiste_don;} else {
+                        if ((tag == 5) && (woche == 0)) {zeitleiste_heute = zeitleiste_fre;} else {
+                        if ((tag == 6) && ((woche == 0) || (woche == 3))) {zeitleiste_heute = zeitleiste_sam;} else {
+                        if ((tag == 7) && ((woche == 0) || (woche == 3))) {zeitleiste_heute = zeitleiste_son;} else {
+                        if ((tag >= 1) && (tag <= 5) && ((woche == 1) || (woche == 3))) {zeitleiste_heute = zeitleiste_mon;} else {
+                        if ((tag >= 6) && (tag <= 7) && (woche == 1)) {zeitleiste_heute = zeitleiste_sam;} else {
+                        if (woche == 2) {zeitleiste_heute = zeitleiste_mon;} }}}}}}}}}
+				  
+                        ! An Feiertagen gilt die Temperatur von Samstag bzw. Sonntag
+                        if (dom.GetObject('Feiertag').State() && ((woche == 0) || (woche == 3))) {zeitleiste_heute = zeitleiste_son;} else {
+                        if (dom.GetObject('Feiertag').State() && (woche == 1)) {zeitleiste_heute = zeitleiste_sam;}}
+                   
+                        ! Position der Zeitleiste bestimmen
+                        if (system.Date("%M").ToInteger() > 29) {integer add = 1;} else {integer add = 0;}
+                        integer sTime = (system.Date("%H").ToInteger()*2)+add;
+                        heizwert = zeitleiste_heute.Substr(sTime, 1);
+             
+                        ! Temperatur bestimmen, die gesetzt werden soll
+                        if (heizwert == "0") {soll_neu = grad_0;} else {
+                        if (heizwert == "1") {soll_neu = grad_1;} else {
+                        if (heizwert == "2") {soll_neu = grad_2;} else {
+                        if (heizwert == "3") {soll_neu = grad_3;} else {
+                        if (heizwert == "4") {soll_neu = grad_4;} else {
+                        if (heizwert == "5") {soll_neu = grad_5;} else {
+                        if (heizwert == "6") {soll_neu = grad_6;} else {
+                        if (heizwert == "7") {soll_neu = grad_7;} else {
+                        if (heizwert == "8") {soll_neu = grad_8;} else {
+                        if (heizwert == "9") {soll_neu = grad_9;} }}}}}}}}}
+
+                        ! letzte Solltemeratur bestimmen, dabei muß der wert von 00:00 beachtet werden - der letzte Wert war gestern
+                        if (sTime == 0) {
+                            if ((tag == 1) && ((woche == 0) || (woche == 3))) {zeitleiste_gestern = zeitleiste_son;} else {
+                            if ((tag == 2) && (woche == 0)) {zeitleiste_gestern = zeitleiste_mon;} else {
+                            if ((tag == 3) && (woche == 0)) {zeitleiste_gestern = zeitleiste_die;} else {
+                            if ((tag == 4) && (woche == 0)) {zeitleiste_gestern = zeitleiste_mit;} else {
+                            if ((tag == 5) && (woche == 0)) {zeitleiste_gestern = zeitleiste_don;} else {
+                            if ((tag == 6) && (woche == 0)) {zeitleiste_gestern = zeitleiste_fre;} else {
+                            if ((tag == 7) && ((woche == 0) || (woche == 3))) {zeitleiste_gestern = zeitleiste_sam;} else {
+                            if ((tag >= 2) && (tag <= 6) && ((woche == 1) || (woche == 3))) {zeitleiste_gestern  = zeitleiste_mon;} else {
+                            if (((tag == 1) || (tag == 7)) && (woche == 1)) {zeitleiste_gestern = zeitleiste_sam;} else {
+                            if (woche == 2) {zeitleiste_gestern = zeitleiste_mon;} }}}}}}}}}
+                       
+                            heizwert = zeitleiste_gestern.Substr(47, 1);
+                        } else {
+                            heizwert = zeitleiste_heute.Substr((sTime-1), 1);
+                        }
+     
+                        ! Temperatur bestimmen, die in der letzten 30 Minutenn war
+                        if (heizwert == "0") {soll_alt = grad_0;} else {
+                        if (heizwert == "1") {soll_alt = grad_1;} else {
+                        if (heizwert == "2") {soll_alt = grad_2;} else {
+                        if (heizwert == "3") {soll_alt = grad_3;} else {
+                        if (heizwert == "4") {soll_alt = grad_4;} else {
+                        if (heizwert == "5") {soll_alt = grad_5;} else {
+                        if (heizwert == "6") {soll_alt = grad_6;} else {
+                        if (heizwert == "7") {soll_alt = grad_7;} else {
+                        if (heizwert == "8") {soll_alt = grad_8;} else {
+                        if (heizwert == "9") {soll_alt = grad_9;} }}}}}}}}}
+                    } !Ende IF Anwesenheit
+                } !Ende IF Gaeste
+            } !Ende IF Urlaub
+        } !Ende IF Partytemperatur
+    } !Ende IF Fenster offen
+} !Ende IF Heizungsperiode
+
+if (soll_ist >= 0) { ! Wenn RT geantwortet hat (Sollwert konnte ausgelesen werden)...
+
+    ! ...dann prüfen ob neue Solltemperatur in RT geschrieben werden muss.
+    if (soll_ist <> soll_neu) { ! Wenn aktuelle Solltemperatur = neue Solltemp., dann nichts machen
+				
+	    time now = system.Date("%Y-%m-%d %H:%M:%S").ToTime(); ! wie spät ist es jetzt?
+        rt_timestamp = regler.Timestamp();
+        integer diff = now.ToInteger() - rt_timestamp.ToInteger();
+
+        if ((diff >= setdelta) || (prioritaet) || (soll_ist == grad_fenster) || (sv_timestamp >= rt_timestamp) || ((soll_ist == soll_alt) && (soll_alt <> soll_neu))) {
+				
+            ! Temperatur setzen                       
+            regler.State(soll_neu);
+            integer regler_gesetzt = 1;
+            if (debug) {
+                string stdout;
+                string stderr;
+                system.Exec("logger -t script -p user.debug Raumthermostat " # raum # " neu gesetzt!\n", &stdout, &stderr);
+                system.Exec("logger -t script -p user.debug alte_Solltemperatur: " # soll_ist # " neue_Solltemperatur: " # soll_neu # "\n", &stdout, &stderr);
+                system.Exec("logger -t script -p user.debug Letzte_Aenderung: " # rt_timestamp # " Zeitdifferenz:_" # diff # "sek.", &stdout, &stderr);
+            }
+        }  
+    }
+} else {
+    string stdout;
+    string stderr;
+    system.Exec("logger -t script -p user.debug Raumthermostat " # raum # " antwortet nicht!", &stdout, &stderr);
+}
