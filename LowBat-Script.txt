@@ -1,0 +1,127 @@
+! ===================================================
+! Script prüft ob eine HM-Komponente aus dem Gewerk "Battriebetrieb" 
+! eine Batteriewarnung hat; wenn ja wird in die Systemvariable V_LowBat 
+! die Komponente mit notwendigem Batterietyp hineingeschrieben und 
+! die Mail 05 aus dem Mail-Addon aufgerufen. Der Text der Systemvariablen 
+! V_LowBat kann über eine TCL-Zeile im Mail-Addon wie
+!                var v7 = dom.GetObject('V_LowBat').State();
+!                ....
+!                set v7 $values(v7)
+! in die Mail übernommen werden.
+!
+! Voraussetzungen
+! ===============
+! - notwendige System-Variable: V_LowBat als Typ String
+!
+! - alle überprüften Komponenten müssen dem Gewerk "Batteriebetrieb"
+!   zugeordnet sein
+!
+! - das Mail-Addon muss installiert und konfiguriert sein
+!
+! ACHTUNG:
+! Script enthält system.Exec-Aufruf; dies KANN zu Problemen auf 
+! der CCU führen (siehe diverse Threads im FHZ-Forum,
+! läuft bei mir aber ohne Probleme)
+!
+! Script von meine-homematic.de abgeändert für Mail-Addon
+! V 1.0 SL / 04.03.2012
+! ===================================================
+
+var myAssembly = dom.GetObject("Batteriebetrieb");
+string itemID;
+string text = "";
+string stdout;
+string stderr;
+integer counter = 0;
+
+! Auflistung Geräte nach Batterietyp
+string cr2016 = "HM-RC-4\tHM-RC-4-B\tHM-RC-Sec3\tHM-RC-Sec3-B\tHM-RC-P1\tHM-RC-Key3\tHM-RC-Key3-B";
+string cr2032 = "HM-PB-2-WM\tHM-SwI-3-FM\tHM-PBI-4-FM\tHM-Sec-TiS";
+string lr44 = "HM-Sec-SC\tHM-Sec-RHS";
+string lr6 = "HM-Sec-MDIR\tHM-CC-TC\tHM-CC-VD\tHM-WDS100-C6-O\tHM-WDS40-TH-I\tHM-WDS10-TH-O\tHM-WDS30-T-O\tHM-Sec-Key\tHM-Sec-SD\tHM-Sec-WDS";
+string lr3 = "HM-RC-12\tHM-PB-4Dis-WM\tHM-Sen-EP";
+string battyp;
+string index;
+
+! Durch alle angemeldeten Geräte laufen
+foreach(itemID, myAssembly.EnumUsedIDs())
+{
+! Gerätedetails & Schnittstelle holen
+var item = dom.GetObject(itemID);
+var device = dom.GetObject(item.Device());
+var interface = dom.GetObject(item.Interface());
+
+! Name, Adresse und Kanal auslesen
+string interface_name = interface.Name();
+string device_address = device.Address();
+device_address = device_address.StrValueByIndex(":", 0);
+string channel_name = interface_name # "." # device_address # ":0.LOWBAT";
+var channel = dom.GetObject(channel_name);
+
+! Batterie leer?
+if ( (channel.State() == true) && (channel.Value() == true) )
+{
+! Gerät enthält CR2016-Batterie?
+batlink = "unbekannt";
+foreach (index, cr2016) {
+!WriteLine(device.HssType());
+if (index == device.HssType()) {
+battyp = "CR2016 ";
+}
+}
+
+! Gerät enthält CR2032-Batterie?
+foreach (index, cr2032) {
+if (index == device.HssType()) {
+battyp = "CR2032 ";
+}
+}
+
+! Gerät enthält LR44-Batterie?
+foreach (index, lr44) {
+if (index == device.HssType()) {
+battyp = "LR44 ";
+}
+}
+
+! Gerät enthält LR6-Batterie?
+foreach (index, lr6) {
+if (index == device.HssType()) {
+battyp = "LR6 / AA";
+}
+}
+
+! Gerät enthält LR3-Batterie?
+foreach (index, lr3) {
+if (index == device.HssType()) {
+battyp = "LR3 / AAA";
+}
+}
+
+! Text zusammensetzen
+text = text # "- " # item.Name() # " vom Batterietyp: " # battyp # "\r\n";
+
+! Counter erhöhen (Anzahl leerer Batterien)
+counter = counter + 1;
+}
+}
+
+! Mind. eine leere Batterie gefunden?
+if ( counter > 0 )
+{
+
+! setzen der Systemvariablen mit der Liste der Komponenten
+dom.GetObject('V_LowBat').State(text);
+
+! Eigentliche Mail absenden
+system.Exec("/etc/config/addons/email/email 05", &stdout, &stderr);
+}
+
+else
+
+{
+! Systemvariable löschen
+dom.GetObject('V_LowBat').State("");
+}
+
+

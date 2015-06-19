@@ -1,0 +1,17 @@
+load tclrega.so
+
+array set values [rega_script {
+var v1 = dom.GetObject("BidCos-RF.LEQ0228319:1.TEMPERATURE").Value();
+var v2 = dom.GetObject("BidCos-RF.LEQ0228319:1.HUMIDITY").Value();
+} ]
+!
+set v1 $values(v1)
+set v2 $values(v2)
+!
+!
+!
+var test = dom.GetObject("BidCos-RF.LEQ0228319:1.TEMPERATURE").Value();
+var test2 = dom.GetObject("BidCos-RF.LEQ0228319:1.HUMIDITY").Value();
+WriteLine(test);
+WriteLine(test2);
+
